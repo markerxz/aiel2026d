@@ -1478,12 +1478,12 @@ function showView(id){
   window.scrollTo({top:0, behavior:'instant' in window ? 'instant' : 'auto'});
   sidebar.classList.remove('open'); scrim.classList.remove('show');
   if(id==='bed-capacity' && !window.__chartsBedDone) initBedCharts();
-  if(id==='patient-flow' && !window.__chartsFlowDone) initFlowCharts();
-  if(id==='workforce' && !window.__chartsWorkforceDone) initWorkforceCharts();
-  if(id==='quality' && !window.__chartsQualityDone) initQualityCharts();
-  if(id==='capital-supply' && !window.__chartsCapitalDone) initCapitalCharts();
-  if(id==='margins' && !window.__chartsMarginsDone) initMarginsCharts();
-  if(id==='overview' && !window.__chartsOverviewDone) initOverviewCharts();
+  if(id==='patient-flow'){ if(!window.__chartsFlowDone) initFlowCharts(); else refreshViewCharts('patient-flow'); }
+  if(id==='workforce'){ if(!window.__chartsWorkforceDone) initWorkforceCharts(); else refreshViewCharts('workforce'); }
+  if(id==='quality'){ if(!window.__chartsQualityDone) initQualityCharts(); else refreshViewCharts('quality'); }
+  if(id==='capital-supply'){ if(!window.__chartsCapitalDone) initCapitalCharts(); else refreshViewCharts('capital-supply'); }
+  if(id==='margins'){ if(!window.__chartsMarginsDone) initMarginsCharts(); else refreshViewCharts('margins'); }
+  if(id==='overview'){ if(!window.__chartsOverviewDone) initOverviewCharts(); else refreshViewCharts('overview'); }
   if(id==='scenario') renderScenarioChart();
   animateTilesIn(el);
 }
@@ -1573,17 +1573,49 @@ function animateTilesIn(root){
 ============================================================ */
 const C = { navy:'#0A2240', blue:'#0587F8', blue2:'#3B9EFA', pink:'#F0369B', teal:'#0E9F6E', amber:'#D97706', red:'#DC2626', grid:'#E7ECF2', ink:'#64748B', ink2:'#AEBBCC' };
 const chartRegistry = [];
+/* Charts are registered once per tab (lazily, on first visit) and the fn is
+   kept both in the flat chartRegistry (redrawn on window resize) AND bucketed
+   by view id in chartsByView. The bucket is what lets showView() re-fit a
+   tab's charts every time it becomes visible again — not just the first time.
+   Without this, a canvas drawn while its tab was hidden on a previous visit
+   (e.g. the window was resized, or the sidebar/scrollbar changed the
+   available width while that tab was off-screen) kept its stale pixel buffer
+   size baked into an inline style width; CSS's max-width:100% would then
+   rescale just the width to fit the new container while the fixed-px height
+   stayed put, stretching/squashing the chart — the "misshapen graph on tab
+   switch" bug. */
+const chartsByView = {};
 let resizeTimer;
 window.addEventListener('resize', ()=>{
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(()=>chartRegistry.forEach(fn=>{ try{ fn(); }catch(e){} }), 150);
 });
-function registerChart(fn){ fn(); chartRegistry.push(()=>{ try{ fn(); }catch(e){} }); }
+function registerChart(fn, viewId){
+  fn();
+  const wrapped = ()=>{ try{ fn(); }catch(e){} };
+  chartRegistry.push(wrapped);
+  if(viewId){ (chartsByView[viewId] = chartsByView[viewId] || []).push(wrapped); }
+}
+function refreshViewCharts(viewId){ (chartsByView[viewId] || []).forEach(fn=>fn()); }
 
 function fitCanvas(canvas){
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth || canvas.parentElement.clientWidth || 300;
-  const cssH = parseInt(canvas.getAttribute('height'),10) || 140;
+  /* canvas.width/height are "reflected" IDL attributes: assigning the JS
+     property below also rewrites the element's height="..." content
+     attribute. On any display where devicePixelRatio !== 1, re-reading
+     canvas.getAttribute('height') on the NEXT redraw (hover, window resize,
+     revisiting a tab) would pick up the already-dpr-multiplied buffer size
+     instead of the original authored height, multiply it by dpr again, and
+     write that back — doubling (or worse) every redraw until the chart
+     exploded to hundreds of px tall. That runaway growth, not a one-off
+     sizing glitch, was the real cause of the misshapen/oversized graphs.
+     Fix: capture the authored height once and reuse that cached value on
+     every subsequent call instead of trusting the (self-mutated) attribute. */
+  if(canvas.__baseCssH === undefined){
+    canvas.__baseCssH = parseInt(canvas.getAttribute('height'),10) || 140;
+  }
+  const cssH = canvas.__baseCssH;
   canvas.width = Math.max(1,Math.round(cssW*dpr));
   canvas.height = Math.max(1,Math.round(cssH*dpr));
   canvas.style.width = cssW+'px';
@@ -1869,13 +1901,13 @@ function initOverviewCharts(){
       { label:'Actual margin', color:C.blue, data:[4.8,4.6,4.9,4.5,4.0,3.8,3.5,3.2], area:true },
       { label:'Plan (5.0%)', color:C.ink2, data:[5,5,5,5,5,5,5,5], dash:true, points:false }
     ]
-  }));
+  }), 'overview');
   const spark = document.getElementById('heroSparkline');
   registerChart(()=>drawLineChart(spark, {
     labels:['Mar','Apr','May','Jun','Jul','Aug','Sep','Oct'],
     sparkline:true, legend:false,
     series:[{ label:'Margin', color:'#bfe3ff', data:[4.8,4.6,4.9,4.5,4.0,3.8,3.5,3.2], area:true, points:false, width:2 }]
-  }));
+  }), 'overview');
 }
 
 /* ===== Patient Flow charts ===== */
@@ -1888,7 +1920,7 @@ function initFlowCharts(){
     yFormat:v=>Math.round(v),
     datasets:[{ label:'Arrivals', data:[5,4,3,2,2,4,7,11,16,21,25,28,26,24,22,23,25,27,29,26,21,16,11,7], color:C.blue2 }],
     legend:false, padBottom:18
-  }));
+  }), 'patient-flow');
 
   const days = Array.from({length:14},(_,i)=>'Oct '+(15+i>31?15+i-31:15+i));
   const cEd = document.getElementById('chartEdWait');
@@ -1898,7 +1930,7 @@ function initFlowCharts(){
       { label:'Median wait', color:C.pink, data:[31,33,29,35,34,37,36,39,41,37,40,36,42,38], area:true },
       { label:'Target (30m)', color:C.ink2, data:Array(14).fill(30), dash:true, points:false }
     ]
-  }));
+  }), 'patient-flow');
 
   const cBoard = document.getElementById('chartBoarding');
   registerChart(()=>drawBarChart(cBoard, {
@@ -1906,7 +1938,7 @@ function initFlowCharts(){
     yFormat:v=>Math.round(v),
     datasets:[{ label:'Admitted patients', data:[9,14,11,9,5], colors:[C.teal,C.blue,C.amber,C.red,'#9F1C1C'] }],
     legend:false
-  }));
+  }), 'patient-flow');
 
   const cLwbs = document.getElementById('chartLwbs');
   registerChart(()=>drawBarChart(cLwbs, {
@@ -1914,7 +1946,7 @@ function initFlowCharts(){
     yFormat:v=>v.toFixed(1)+'%',
     datasets:[{ label:'LWBS rate', data:[1.6,1.7,1.5,1.9,1.8,2.0,1.9,2.1], color:C.blue2 }],
     refLine:{ value:2.0, label:'Target (2.0%)', color:C.red }
-  }));
+  }), 'patient-flow');
 
   const cDis = document.getElementById('chartDischarge');
   registerChart(()=>drawBarChart(cDis, {
@@ -1922,7 +1954,7 @@ function initFlowCharts(){
     yFormat:v=>Math.round(v),
     datasets:[{ label:'Before-noon discharges', data:[38,41,35,44,39,30,33], color:C.blue }],
     legend:false
-  }));
+  }), 'patient-flow');
 }
 
 /* ===== Bed capacity (gauges are static SVG; nothing to init yet but keep hook) ===== */
@@ -1937,14 +1969,14 @@ function initWorkforceCharts(){
     yFormat:v=>Math.round(v).toLocaleString('en-US'),
     series:[{ label:'Overtime hours', color:C.amber, data:[3200,3320,3480,3390,3610,3780,3950,4120], area:true }],
     legend:false
-  }));
+  }), 'workforce');
   const cEng = document.getElementById('chartEngagement');
   registerChart(()=>drawLineChart(cEng, {
     labels:["Q4 '25","Q1 '26","Q2 '26","Q3 '26"],
     yFormat:v=>Math.round(v), yMin:0, yMax:60,
     series:[{ label:'Engagement score', color:C.red, data:[44,42,40,34], area:true }],
     legend:false
-  }));
+  }), 'workforce');
 }
 
 /* ===== Quality charts ===== */
@@ -1960,7 +1992,7 @@ function initQualityCharts(){
       { label:'SSI', color:C.teal, data:[0.42,0.4,0.44,0.43,0.41,0.45,0.42,0.43,0.4,0.41,0.39,0.4] },
       { label:'CLABSI upper control limit', color:C.ink2, data:Array(12).fill(0.9), dash:true, points:false }
     ]
-  }));
+  }), 'quality');
 }
 
 /* ===== Capital & supply charts ===== */
@@ -1972,7 +2004,7 @@ function initCapitalCharts(){
     yFormat:v=>v.toFixed(1)+'w',
     series:[{ label:'Supplier lead time', color:C.pink, data:[2.1,2.2,2.4,2.6,2.9,3.0,3.2,3.4], area:true }],
     legend:false
-  }));
+  }), 'capital-supply');
 }
 
 /* ===== Margins charts ===== */
@@ -1987,7 +2019,7 @@ function initMarginsCharts(){
       { label:'Budget', color:C.ink2, data:Array(6).fill(7950), dash:true, points:false },
       { label:'SG peer benchmark', color:C.blue2, data:Array(6).fill(8100), dash:true, points:false }
     ]
-  }));
+  }), 'margins');
 
   const cBridge = document.getElementById('chartMarginBridge');
   registerChart(()=>drawWaterfall(cBridge, {
@@ -1995,7 +2027,7 @@ function initMarginsCharts(){
     yFormat:v=>v.toFixed(1)+'%',
     values:[5.0,-0.3,-0.5,-0.7,-0.6,0.3,3.2],
     isTotal:[true,false,false,false,false,false,true]
-  }));
+  }), 'margins');
 }
 
 /* ============================================================
